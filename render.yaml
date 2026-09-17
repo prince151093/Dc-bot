@@ -1,0 +1,17 @@
+services:
+  - type: worker
+    name: vehicle-life-bot
+    runtime: node
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: DISCORD_TOKEN
+        sync: false
+      - key: CLIENT_ID
+        sync: false
+      - key: GUILD_ID
+        sync: false
+      - key: TOP_GARAGES_CHANNEL_ID
+        sync: false
+      - key: DB_PATH
+        value: vehicle-life.json

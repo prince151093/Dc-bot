@@ -1,6 +1,6 @@
 {
   "name": "vehicle-life-bot",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Vehicle Life Discord activity-to-vehicle collection bot",
   "main": "src/index.js",
   "scripts": {
@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "discord.js": "^14.21.0",
-    "dotenv": "^16.6.1"
+    "dotenv": "^16.6.1",
+    "mongodb": "^6.20.0"
   }
 }

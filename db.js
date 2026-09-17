@@ -1,38 +1,54 @@
-const fs = require("node:fs");
-const path = require("node:path");
+const { MongoClient } = require("mongodb");
+const config = require("./config");
 
-const dbPath = path.resolve(process.env.DB_PATH || "vehicle-life.json");
+if (!config.mongoUri) {
+  console.error("Missing MONGODB_URI environment variable.");
+  process.exit(1);
+}
+
+const client = new MongoClient(config.mongoUri);
+let collection;
 const data = { users: {} };
-
-function load() {
-  try {
-    if (fs.existsSync(dbPath)) {
-      const parsed = JSON.parse(fs.readFileSync(dbPath, "utf8"));
-      if (parsed && typeof parsed === "object" && parsed.users && typeof parsed.users === "object") {
-        data.users = parsed.users;
-      }
-    }
-  } catch (err) {
-    console.error("Could not load database file:", err.message);
-  }
-}
-
-function save() {
-  try {
-    const dir = path.dirname(dbPath);
-    fs.mkdirSync(dir, { recursive: true });
-    const tmp = `${dbPath}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(data, null, 2), "utf8");
-    fs.renameSync(tmp, dbPath);
-  } catch (err) {
-    console.error("Could not save database file:", err.message);
-  }
-}
-
-load();
+let saveQueue = Promise.resolve();
 
 function key(userId, guildId) {
   return `${guildId}:${userId}`;
+}
+
+function userDoc(user) {
+  return {
+    _id: key(user.user_id, user.guild_id),
+    user_id: user.user_id,
+    guild_id: user.guild_id,
+    messages: user.messages,
+    vc_seconds: user.vc_seconds,
+    vehicle_index: user.vehicle_index,
+    last_vc_join: user.last_vc_join,
+    updated_at: user.updated_at
+  };
+}
+
+function queueSave(user) {
+  const snapshot = { ...user };
+  saveQueue = saveQueue
+    .then(() => collection.replaceOne({ _id: key(snapshot.user_id, snapshot.guild_id) }, userDoc(snapshot), { upsert: true }))
+    .catch(err => console.error("Could not save MongoDB user:", err.message));
+  return saveQueue;
+}
+
+async function init() {
+  await client.connect();
+  const db = client.db(config.mongoDb);
+  collection = db.collection("users");
+  await collection.createIndex({ guild_id: 1, vehicle_index: -1, vc_seconds: -1, messages: -1 });
+
+  const rows = await collection.find({}).toArray();
+  for (const row of rows) {
+    const { _id, ...user } = row;
+    data.users[_id] = user;
+  }
+
+  console.log(`MongoDB connected. Database: ${config.mongoDb}, users loaded: ${rows.length}`);
 }
 
 function ensureUser(userId, guildId) {
@@ -47,7 +63,7 @@ function ensureUser(userId, guildId) {
       last_vc_join: null,
       updated_at: Math.floor(Date.now() / 1000)
     };
-    save();
+    queueSave(data.users[k]);
   }
   return data.users[k];
 }
@@ -59,7 +75,7 @@ function getUser(userId, guildId) {
 function update(userId, guildId, changes) {
   const user = ensureUser(userId, guildId);
   Object.assign(user, changes, { updated_at: Math.floor(Date.now() / 1000) });
-  save();
+  queueSave(user);
   return { ...user };
 }
 
@@ -67,7 +83,7 @@ function addMessage(userId, guildId, count = 1) {
   const user = ensureUser(userId, guildId);
   user.messages += Math.max(0, Math.floor(count));
   user.updated_at = Math.floor(Date.now() / 1000);
-  save();
+  queueSave(user);
 }
 
 function addVcSeconds(userId, guildId, seconds) {
@@ -75,7 +91,7 @@ function addVcSeconds(userId, guildId, seconds) {
   const user = ensureUser(userId, guildId);
   user.vc_seconds += Math.floor(seconds);
   user.updated_at = Math.floor(Date.now() / 1000);
-  save();
+  queueSave(user);
 }
 
 function setVcJoin(userId, guildId, timestamp) {
@@ -98,15 +114,21 @@ function topUsers(guildId, limit = 10) {
     .map(user => ({ ...user }));
 }
 
-function close() {
-  // Clear active voice timestamps so a restart cannot count downtime as voice time.
+async function close() {
   for (const user of Object.values(data.users)) {
-    if (user.last_vc_join !== null) user.last_vc_join = null;
+    if (user.last_vc_join !== null) {
+      user.last_vc_join = null;
+      user.updated_at = Math.floor(Date.now() / 1000);
+      queueSave(user);
+    }
   }
-  save();
+
+  await saveQueue;
+  await client.close();
 }
 
 module.exports = {
+  init,
   ensureUser,
   getUser,
   addMessage,

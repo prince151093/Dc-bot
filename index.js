@@ -6,7 +6,10 @@ const {
   Routes,
   SlashCommandBuilder,
   PermissionFlagsBits,
-  ChannelType
+  ChannelType,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle
 } = require("discord.js");
 
 const config = require("./config");
@@ -19,9 +22,10 @@ const {
   clearVcJoin,
   setVehicleIndex,
   topUsers,
-  close: closeDb
+  close: closeDb,
+  init: initDb
 } = require("./db");
-const { profileEmbed, garageEmbed, topGaragesEmbed } = require("./cards");
+const { profileEmbed, profileFiles, garagePage, topGaragesEmbed } = require("./cards");
 
 if (!config.token) {
   console.error("Missing DISCORD_TOKEN environment variable.");
@@ -148,18 +152,69 @@ client.on("voiceStateUpdate", async (oldState, newState) => {
 });
 
 client.on("interactionCreate", async interaction => {
-  if (!interaction.isChatInputCommand()) return;
+  if (!interaction.guild) return;
 
-  if (!interaction.guild) return interaction.reply({ content: "❌ This command can only be used in a server.", ephemeral: true });
+  if (interaction.isButton() && interaction.customId.startsWith("garage:")) {
+    const [, direction, ownerId, pageText] = interaction.customId.split(":");
+    if (interaction.user.id !== ownerId) {
+      return interaction.reply({ content: "❌ Only the person who opened this garage can use these buttons.", ephemeral: true });
+    }
+
+    const currentPage = Number(pageText) || 0;
+    const nextPage = direction === "next" ? currentPage + 1 : currentPage - 1;
+    const freshUser = getUser(interaction.user.id, interaction.guild.id);
+    const page = garagePage(interaction.member, freshUser, nextPage);
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`garage:prev:${ownerId}:${page.page}`)
+        .setLabel("Previous")
+        .setEmoji("⬅️")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(page.page <= 0),
+      new ButtonBuilder()
+        .setCustomId(`garage:next:${ownerId}:${page.page}`)
+        .setLabel("Next")
+        .setEmoji("➡️")
+        .setStyle(ButtonStyle.Primary)
+        .setDisabled(page.page >= page.pageCount - 1)
+    );
+
+    return interaction.update({ embeds: page.embeds, files: page.files, components: [row] });
+  }
+
+  if (!interaction.isChatInputCommand()) return;
 
   const user = getUser(interaction.user.id, interaction.guild.id);
 
   if (interaction.commandName === "profile") {
-    return interaction.reply({ embeds: [profileEmbed(interaction.member, user)] });
+    return interaction.reply({
+      embeds: [profileEmbed(interaction.member, user)],
+      files: profileFiles(user)
+    });
   }
 
   if (interaction.commandName === "garage") {
-    return interaction.reply({ embeds: [garageEmbed(interaction.member, user)] });
+    const page = garagePage(interaction.member, user, 0);
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`garage:prev:${interaction.user.id}:0`)
+        .setLabel("Previous")
+        .setEmoji("⬅️")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(page.page <= 0),
+      new ButtonBuilder()
+        .setCustomId(`garage:next:${interaction.user.id}:0`)
+        .setLabel("Next")
+        .setEmoji("➡️")
+        .setStyle(ButtonStyle.Primary)
+        .setDisabled(page.page >= page.pageCount - 1)
+    );
+
+    return interaction.reply({
+      embeds: page.embeds,
+      files: page.files,
+      components: [row]
+    });
   }
 
   if (interaction.commandName === "topgarages") {
@@ -182,14 +237,24 @@ client.on("interactionCreate", async interaction => {
   }
 });
 
-client.login(config.token);
+async function start() {
+  try {
+    await initDb();
+    await client.login(config.token);
+  } catch (err) {
+    console.error("Startup failed:", err);
+    process.exit(1);
+  }
+}
+
+start();
 
 process.on("unhandledRejection", err => console.error("Unhandled promise rejection:", err));
 process.on("uncaughtException", err => console.error("Uncaught exception:", err));
 
 async function shutdown(signal) {
   console.log(`${signal} received. Saving data and shutting down...`);
-  closeDb();
+  try { await closeDb(); } catch (err) { console.error("Database shutdown error:", err.message); }
   try { client.destroy(); } catch {}
   process.exit(0);
 }

@@ -4,6 +4,7 @@ services:
     runtime: node
     buildCommand: npm install
     startCommand: npm start
+    numInstances: 1
     envVars:
       - key: DISCORD_TOKEN
         sync: false
@@ -13,5 +14,7 @@ services:
         sync: false
       - key: TOP_GARAGES_CHANNEL_ID
         sync: false
-      - key: DB_PATH
-        value: vehicle-life.json
+      - key: MONGODB_URI
+        sync: false
+      - key: MONGODB_DB
+        value: vehiclelife
